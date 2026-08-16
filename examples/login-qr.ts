@@ -1,15 +1,15 @@
 /**
  * examples/login-qr.ts
  *
- * Minimal QR login example for ZCA-MT.
+ * Minimal QR login example for zca-mt.
  *
  * IMPORTANT:
  * - The QR code is only ever written to a local file/terminal on your own
- *   machine; ZCA-MT never uploads it anywhere.
+ *   machine; zca-mt never uploads it anywhere.
  * - This example intentionally does NOT save cookies/session data anywhere.
  *   See examples/send-message.ts or src/session.ts if you want to opt in to
  *   session persistence yourself.
- * - ZCA-MT is an unofficial API. Using it can result in your account being
+ * - zca-mt is an unofficial API. Using it can result in your account being
  *   rate-limited or locked by Zalo. Only use it with an account you own or
  *   are explicitly authorized to manage.
  */

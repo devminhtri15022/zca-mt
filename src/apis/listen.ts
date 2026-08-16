@@ -26,6 +26,22 @@ export type OnMessageCallback = (message: Message) => unknown;
 export type OnClosedCallback = (code: CloseReason, reason: string) => unknown;
 export type OnErrorCallback = (error: unknown) => unknown;
 
+export type ListenerStartOptions = {
+    retryOnClose?: boolean;
+    /** Random delay spread (0..1) used to avoid reconnect storms. Default: 0.2. */
+    retryJitter?: number;
+    /** Upper bound for a single reconnect delay. Default: 30 seconds. */
+    maxRetryDelayMs?: number;
+    /** Time allowed for the websocket handshake. Default: 15 seconds. */
+    connectTimeoutMs?: number;
+    /** Reset retry counters after a healthy connection. Default: 30 seconds. */
+    stableConnectionMs?: number;
+    /** Terminate a silent connection after this period. Set 0 to disable. Default: 90 seconds. */
+    heartbeatTimeoutMs?: number;
+};
+
+export type ListenerState = "idle" | "connecting" | "connected" | "reconnecting" | "stopped";
+
 export enum CloseReason {
     ManualClosure = 1000,
     AbnormalClosure = 1006,
@@ -50,6 +66,8 @@ interface ListenerEvents {
     friend_event: [data: FriendEvent];
     group_event: [data: GroupEvent];
     cipher_key: [key: string];
+    reconnecting: [attempt: number, delayMs: number, code: CloseReason];
+    state: [state: ListenerState];
 }
 
 export class Listener extends EventEmitter<ListenerEvents> {
@@ -76,6 +94,13 @@ export class Listener extends EventEmitter<ListenerEvents> {
 
     private selfListen;
     private pingInterval?: NodeJS.Timeout;
+    private reconnectTimer?: NodeJS.Timeout;
+    private connectTimer?: NodeJS.Timeout;
+    private stableTimer?: NodeJS.Timeout;
+    private heartbeatTimer?: NodeJS.Timeout;
+    private lastActivityAt = 0;
+    private state: ListenerState = "idle";
+    private manuallyStopped = false;
 
     private id = 0;
 
@@ -86,6 +111,7 @@ export class Listener extends EventEmitter<ListenerEvents> {
         super();
         if (!ctx.cookie) throw new ZaloApiError("Cookie is not available");
         if (!ctx.userAgent) throw new ZaloApiError("User agent is not available");
+        if (urls.length === 0) throw new ZaloApiError("At least one websocket endpoint is required");
 
         this.wsURL = makeURL(this.ctx, this.urls[0], {
             t: Date.now(),
@@ -145,14 +171,31 @@ export class Listener extends EventEmitter<ListenerEvents> {
 
     private canRetry(code: CloseReason) {
         if (!this.ctx.settings.features.socket.close_and_retry_codes.includes(code)) return false;
-        if (this.retryCount[code.toString()].count >= this.retryCount[code.toString()].max) return false;
-        this.retryCount[code.toString()].count++;
+        const retryConfig = this.retryCount[code.toString()];
+        if (!retryConfig || retryConfig.count >= retryConfig.max) return false;
+        retryConfig.count++;
 
-        const { count, max, times } = this.retryCount[code.toString()];
+        const { count, max, times } = retryConfig;
+        if (times.length === 0) return false;
         const retryTime = count - 1 < times.length ? times[count - 1] : times[times.length - 1];
         logger(this.ctx).verbose(`Retry for code ${code} in ${retryTime}ms (${count}/${max})`);
 
         return retryTime;
+    }
+
+    private setState(state: ListenerState) {
+        if (this.state === state) return;
+        this.state = state;
+        this.emit("state", state);
+    }
+
+    private resetRetryCounters() {
+        for (const retry of Object.values(this.retryCount)) retry.count = 0;
+        this.rotateCount = 0;
+    }
+
+    public getState(): ListenerState {
+        return this.state;
     }
 
     private shouldRotate(code: CloseReason) {
@@ -170,8 +213,23 @@ export class Listener extends EventEmitter<ListenerEvents> {
         logger(this.ctx).verbose(`Rotating endpoint to ${this.wsURL}`);
     }
 
-    public start({ retryOnClose = false }: { retryOnClose?: boolean } = {}) {
+    public start({
+        retryOnClose = false,
+        retryJitter = 0.2,
+        maxRetryDelayMs = 30_000,
+        connectTimeoutMs = 15_000,
+        stableConnectionMs = 30_000,
+        heartbeatTimeoutMs = 90_000,
+    }: ListenerStartOptions = {}) {
         if (this.ws) throw new ZaloApiError("Already started");
+        if (retryJitter < 0 || retryJitter > 1) throw new RangeError("retryJitter must be between 0 and 1");
+        if (maxRetryDelayMs <= 0) throw new RangeError("maxRetryDelayMs must be positive");
+        if (connectTimeoutMs <= 0) throw new RangeError("connectTimeoutMs must be positive");
+        if (stableConnectionMs < 0) throw new RangeError("stableConnectionMs cannot be negative");
+        if (heartbeatTimeoutMs < 0) throw new RangeError("heartbeatTimeoutMs cannot be negative");
+
+        this.manuallyStopped = false;
+        this.setState(this.state === "reconnecting" ? "reconnecting" : "connecting");
 
         const ws = new WebSocket(this.wsURL, {
             headers: {
@@ -191,8 +249,36 @@ export class Listener extends EventEmitter<ListenerEvents> {
             agent: this.ctx.options.agent,
         });
         this.ws = ws;
+        this.lastActivityAt = Date.now();
+        this.connectTimer = setTimeout(() => {
+            if (this.ws === ws && ws.readyState !== WebSocket.OPEN) {
+                logger(this.ctx).warn(`Websocket handshake timed out after ${connectTimeoutMs}ms`);
+                ws.terminate();
+            }
+        }, connectTimeoutMs);
 
         ws.onopen = () => {
+            if (this.connectTimer) {
+                clearTimeout(this.connectTimer);
+                this.connectTimer = undefined;
+            }
+            this.lastActivityAt = Date.now();
+            this.setState("connected");
+            if (stableConnectionMs === 0) this.resetRetryCounters();
+            else {
+                this.stableTimer = setTimeout(() => {
+                    this.stableTimer = undefined;
+                    if (this.ws === ws && ws.readyState === WebSocket.OPEN) this.resetRetryCounters();
+                }, stableConnectionMs);
+            }
+            if (heartbeatTimeoutMs > 0) {
+                this.heartbeatTimer = setInterval(() => {
+                    if (this.ws === ws && Date.now() - this.lastActivityAt > heartbeatTimeoutMs) {
+                        logger(this.ctx).warn(`Websocket was silent for more than ${heartbeatTimeoutMs}ms; reconnecting`);
+                        ws.terminate();
+                    }
+                }, Math.max(1_000, Math.min(heartbeatTimeoutMs / 2, 30_000)));
+            }
             this.onConnectedCallback();
             this.emit("connected");
         };
@@ -200,16 +286,32 @@ export class Listener extends EventEmitter<ListenerEvents> {
         ws.onclose = (event) => {
             this.reset();
             this.emit("disconnected", event.code as CloseReason, event.reason);
-            const retry = retryOnClose && this.canRetry(event.code as CloseReason);
+            const retry = !this.manuallyStopped && retryOnClose && this.canRetry(event.code as CloseReason);
             if (retry && retryOnClose) {
                 const shouldRotate = this.shouldRotate(event.code as CloseReason);
                 if (shouldRotate) {
                     this.rotateEndpoint();
                 }
-                setTimeout(() => {
-                    this.start({ retryOnClose: true });
-                }, retry);
+                const spread = retry * retryJitter;
+                const delay = Math.min(maxRetryDelayMs, Math.max(1, Math.round(retry - spread + Math.random() * spread * 2)));
+                const attempt = this.retryCount[event.code.toString()]?.count ?? 1;
+                this.setState("reconnecting");
+                this.emit("reconnecting", attempt, delay, event.code as CloseReason);
+                this.reconnectTimer = setTimeout(() => {
+                    this.reconnectTimer = undefined;
+                    if (!this.manuallyStopped) {
+                        this.start({
+                            retryOnClose: true,
+                            retryJitter,
+                            maxRetryDelayMs,
+                            connectTimeoutMs,
+                            stableConnectionMs,
+                            heartbeatTimeoutMs,
+                        });
+                    }
+                }, delay);
             } else {
+                this.setState(this.manuallyStopped ? "stopped" : "idle");
                 this.onClosedCallback(event.code, event.reason);
                 this.emit("closed", event.code as CloseReason, event.reason);
             }
@@ -221,6 +323,7 @@ export class Listener extends EventEmitter<ListenerEvents> {
         };
 
         ws.onmessage = async (event) => {
+            this.lastActivityAt = Date.now();
             const { data } = event;
             if (!(data instanceof Buffer)) return;
 
@@ -472,10 +575,16 @@ export class Listener extends EventEmitter<ListenerEvents> {
     }
 
     public stop() {
+        this.manuallyStopped = true;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = undefined;
+        }
         if (this.ws) {
             this.ws.close(CloseReason.ManualClosure);
             this.reset();
         }
+        this.setState("stopped");
     }
 
     public sendWs(payload: WsPayload, requireId: boolean = true) {
@@ -531,7 +640,22 @@ export class Listener extends EventEmitter<ListenerEvents> {
     private reset() {
         this.ws = null;
         this.cipherKey = undefined;
-        if (this.pingInterval) clearInterval(this.pingInterval);
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = undefined;
+        }
+        if (this.connectTimer) {
+            clearTimeout(this.connectTimer);
+            this.connectTimer = undefined;
+        }
+        if (this.stableTimer) {
+            clearTimeout(this.stableTimer);
+            this.stableTimer = undefined;
+        }
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = undefined;
+        }
     }
 }
 

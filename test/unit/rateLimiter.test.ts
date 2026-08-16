@@ -51,4 +51,20 @@ describe("RateLimiter", () => {
         expect(() => new RateLimiter({ maxCalls: 0 })).toThrow(RangeError);
         expect(() => new RateLimiter({ intervalMs: 0 })).toThrow(RangeError);
     });
+
+    it("releases async waiters in FIFO order", async () => {
+        const limiter = new RateLimiter({ maxCalls: 1, intervalMs: 5 });
+        limiter.acquire();
+        const order: number[] = [];
+        const first = limiter.wait().then(() => order.push(1));
+        const second = limiter.wait().then(() => order.push(2));
+        await Promise.all([first, second]);
+        expect(order).toEqual([1, 2]);
+    });
+
+    it("reports and enforces queue capacity", () => {
+        const limiter = new RateLimiter({ maxCalls: 1, intervalMs: 1000, maxQueueSize: 0 });
+        limiter.acquire();
+        expect(limiter.wait()).rejects.toThrow(RateLimitError);
+    });
 });

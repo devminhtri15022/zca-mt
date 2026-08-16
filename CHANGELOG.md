@@ -1,6 +1,28 @@
 # Changelog
 
-All notable changes to ZCA-MT are documented in this file.
+## 1.2.1
+
+- Standardized all current product-facing names and messages to lowercase `zca-mt`.
+- Kept `ZcaMT` and `ZCA_MT_*` only where required by TypeScript and environment-variable syntax.
+- Preserved historical `zca-js` attribution and migration references.
+
+## 1.2.0
+
+- Added websocket handshake timeout, silence detection and stable-connection retry reset.
+- Made asynchronous rate limiting strictly FIFO and added global bot budgets plus idle cleanup.
+- Added AES-256-GCM encrypted session files and asynchronous session APIs.
+- Added an abortable retry helper restricted to explicitly idempotent operations.
+- Added focused tests and automated dependency/security scanning.
+
+## 1.1.0
+
+- Added observable listener lifecycle and reconnect jitter with bounded delays.
+- Added abortable async rate-limit queues and runtime snapshots.
+- Hardened session persistence with atomic writes, size limits and symlink checks.
+- Added a typed, per-thread rate-limited `CommandRouter` for bot projects.
+- Added cross-platform Node.js 20/22 CI and package verification.
+
+All notable changes to zca-mt are documented in this file.
 
 This project is a fork of [zca-js](https://github.com/RFS-ADRENO/zca-js).
 Entries below only describe changes made **in this fork**; see the upstream
@@ -9,7 +31,7 @@ this fork was built from.
 
 ## [0.1.0] - Unreleased
 
-Initial release of ZCA-MT, forked from `zca-js`.
+Initial release of zca-mt, forked from `zca-js`.
 
 ### Added
 
@@ -23,7 +45,7 @@ Initial release of ZCA-MT, forked from `zca-js`.
   `zca-js` are still exported unchanged.
 - Logger redaction: `cookie`, `token`, `imei`, `secret`, `authorization`,
   and `session`-named fields (case-insensitive, substring match) are masked
-  before being printed by ZCA-MT's internal logger.
+  before being printed by zca-mt's internal logger.
 - Optional session helpers (`saveSession`, `loadSession`, `deleteSession`)
   for persisting login credentials to disk with restrictive file
   permissions. Not called automatically — session persistence remains fully
@@ -53,4 +75,4 @@ Initial release of ZCA-MT, forked from `zca-js`.
 ### Not supported
 
 - Anything not already present in the upstream `zca-js` project at the time
-  of this fork. ZCA-MT does not add new Zalo API endpoints of its own.
+  of this fork. zca-mt does not add new Zalo API endpoints of its own.

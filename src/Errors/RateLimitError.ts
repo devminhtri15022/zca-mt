@@ -1,7 +1,7 @@
 import { ZcaMTError, type ErrorDetails } from "./ZcaMTError.js";
 
 /**
- * Thrown by ZCA-MT's own client-side {@link "../rateLimiter.js".RateLimiter}
+ * Thrown by zca-mt's own client-side {@link "../rateLimiter.js".RateLimiter}
  * when a caller exceeds the configured request budget. This is a local,
  * defensive guard — it is not a report of a rate limit enforced by Zalo's
  * servers.

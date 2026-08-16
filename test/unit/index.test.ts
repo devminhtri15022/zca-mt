@@ -16,7 +16,7 @@ describe("public exports", () => {
         expect(zcaMT.ThreadType.Group).toBe(1);
     });
 
-    it("exports the ZCA-MT error hierarchy", () => {
+    it("exports the zca-mt error hierarchy", () => {
         expect(zcaMT.ZcaMTError).toBeTypeOf("function");
         expect(zcaMT.AuthenticationError).toBeTypeOf("function");
         expect(zcaMT.SessionError).toBeTypeOf("function");
@@ -42,7 +42,7 @@ describe("public exports", () => {
     });
 
     it("exports package metadata constants", () => {
-        expect(zcaMT.ZCA_MT_DISPLAY_NAME).toBe("ZCA-MT");
+        expect(zcaMT.ZCA_MT_DISPLAY_NAME).toBe("zca-mt");
         expect(zcaMT.ZCA_MT_VERSION).toBeTypeOf("string");
     });
 });

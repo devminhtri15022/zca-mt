@@ -2,9 +2,11 @@ export * from "./Errors/index.js";
 export * from "./models/index.js";
 export * from "./zalo.js";
 
-// ZCA-MT additions (session helpers, rate limiter, package metadata)
+// zca-mt additions (session helpers, rate limiter, package metadata)
 export * from "./session.js";
 export * from "./rateLimiter.js";
+export * from "./bot.js";
+export * from "./retry.js";
 export { ZCA_MT_VERSION, ZCA_MT_DISPLAY_NAME } from "./meta.js";
 
 export type {
@@ -209,6 +211,7 @@ export type { CustomAPICallback, CustomAPIProps } from "./apis/custom.js";
 
 // Others (Enum)
 export { CloseReason } from "./apis/listen.js";
+export type { ListenerStartOptions, ListenerState, WsPayload } from "./apis/listen.js";
 export { LoginQRCallbackEventType } from "./apis/loginQR.js";
 export { FriendRecommendationsType } from "./apis/getFriendRecommendations.js";
 export { ReviewPendingMemberRequestStatus } from "./apis/reviewPendingMemberRequest.js";

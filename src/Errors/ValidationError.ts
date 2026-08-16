@@ -1,7 +1,7 @@
 import { ZcaMTError, type ErrorDetails } from "./ZcaMTError.js";
 
 /**
- * Thrown when input passed to a ZCA-MT function fails local validation
+ * Thrown when input passed to a zca-mt function fails local validation
  * before any network request is made (e.g. missing required option, wrong
  * type, out-of-range value).
  */

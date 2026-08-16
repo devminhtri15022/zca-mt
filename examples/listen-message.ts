@@ -43,7 +43,7 @@ api.listener.on("closed", (code, reason) => {
 api.listener.start();
 
 async function shutdown(signal: string) {
-    console.log(`\nReceived ${signal}, stopping ZCA-MT listener...`);
+    console.log(`\nReceived ${signal}, stopping zca-mt listener...`);
     try {
         api.listener.stop();
     } finally {

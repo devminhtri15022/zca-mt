@@ -19,7 +19,7 @@ const api = await zca.loginQR();
 // Send a plain text message.
 await api.sendMessage(
     {
-        msg: "Xin chào từ ZCA-MT!",
+        msg: "Xin chào từ zca-mt!",
     },
     THREAD_ID_PLACEHOLDER,
     ThreadType.User,

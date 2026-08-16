@@ -1,7 +1,7 @@
 {
     "name": "zca-mt",
-    "version": "0.1.0",
-    "description": "Unofficial Zalo API for JavaScript and TypeScript, developed from zca-js",
+    "version": "1.2.1",
+    "description": "Unofficial Zalo API for JavaScript and TypeScript",
     "type": "module",
     "main": "dist/index.js",
     "module": "dist/index.js",
@@ -34,15 +34,9 @@
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "test": "vitest run",
+        "test:ci": "vitest run --reporter=default",
+        "check": "npm run typecheck && npm run lint && npm run test:ci && npm run build",
         "test:watch": "vitest"
-    },
-    "repository": {
-        "type": "git",
-        "url": "git+https://github.com/REPLACE_ME_WITH_YOUR_GITHUB_USERNAME/zca-mt.git"
-    },
-    "homepage": "https://github.com/REPLACE_ME_WITH_YOUR_GITHUB_USERNAME/zca-mt#readme",
-    "bugs": {
-        "url": "https://github.com/REPLACE_ME_WITH_YOUR_GITHUB_USERNAME/zca-mt/issues"
     },
     "engines": {
         "node": ">=20.0.0"

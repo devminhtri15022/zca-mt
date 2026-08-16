@@ -2,8 +2,8 @@ import { compare } from "semver";
 import { isBun, logger } from "./utils.js";
 import type { ContextBase } from "./context.js";
 
-const VERSION = "2.1.2";
-const NPM_REGISTRY = "https://registry.npmjs.org/zca-js";
+const VERSION = "1.0.0";
+const NPM_REGISTRY = "https://registry.npmjs.org/zca-mt";
 
 export async function checkUpdate(ctx: ContextBase) {
     if (!ctx.options.checkUpdate) return;
@@ -25,8 +25,8 @@ export async function checkUpdate(ctx: ContextBase) {
 
     const latestVersion = data["dist-tags"].latest;
     if (compare(VERSION, latestVersion) === -1) {
-        logger(ctx).info(`A new version of zca-js is available: ${latestVersion}`);
+        logger(ctx).info(`A new version of ZCA-MT is available: ${latestVersion}`);
     } else {
-        logger(ctx).info("zca-js is up to date");
+        logger(ctx).info("ZCA-MT is up to date");
     }
 }

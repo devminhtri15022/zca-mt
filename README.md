@@ -1,6 +1,6 @@
 # ZCA-MT
 
-**Unofficial Zalo API for JavaScript and TypeScript, developed from [zca-js](https://github.com/RFS-ADRENO/zca-js).**
+**Unofficial Zalo API for JavaScript and TypeScript**
 
 ZCA-MT lets you automate a personal Zalo account from Node.js: log in via QR
 code, listen for messages and group events in real time, and send text,

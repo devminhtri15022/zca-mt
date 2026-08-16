@@ -15,7 +15,7 @@ import type { API } from "./zalo.js";
 import type { AttachmentSource } from "./models/Attachment.js";
 
 // Feature-detect the Bun runtime without depending on @types/bun, since
-// ZCA-MT targets Node.js as its primary runtime.
+// zca-mt targets Node.js as its primary runtime.
 export const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 
 export function hasOwn(obj: Record<string, unknown>, key: string): key is keyof typeof obj {

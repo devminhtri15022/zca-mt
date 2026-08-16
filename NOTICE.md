@@ -1,6 +1,6 @@
 # NOTICE
 
-ZCA-MT is a fork of, and is developed from, the open-source project
+zca-mt is a fork of, and is developed from, the open-source project
 [zca-js](https://github.com/RFS-ADRENO/zca-js) by RFS-ADRENO and
 contributors (truong9c2208, JustKemForFun).
 
@@ -15,7 +15,7 @@ in this repository, as required by the MIT License.
 
 ## What changed in this fork
 
-ZCA-MT keeps the vast majority of `zca-js`'s source code (the API request
+zca-mt keeps the vast majority of `zca-js`'s source code (the API request
 layer under `src/apis/`, the models, the realtime listener, and the core
 login flow) unchanged in behavior. On top of that, this fork adds:
 
@@ -32,11 +32,11 @@ login flow) unchanged in behavior. On top of that, this fork adds:
   `imageMetadataGetter` validation wrapper.
 - Rebranded package metadata, README, examples, and test suite.
 
-**ZCA-MT does not claim authorship of the original `zca-js` source code.**
+**zca-mt does not claim authorship of the original `zca-js` source code.**
 All credit for the reverse-engineering and implementation of the underlying
 Zalo Web protocol belongs to the original authors.
 
-## License of ZCA-MT's own additions
+## License of zca-mt's own additions
 
 The additions listed above, written for this fork, are also released under
 the MIT License, consistent with the license of the upstream project. See

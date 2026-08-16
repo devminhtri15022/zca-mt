@@ -1,5 +1,5 @@
 /**
- * Structured details attached to every ZCA-MT error.
+ * Structured details attached to every zca-mt error.
  */
 export interface ErrorDetails {
     /** Stable machine-readable error code, e.g. "AUTH_FAILED". */
@@ -13,7 +13,7 @@ export interface ErrorDetails {
 }
 
 /**
- * Base class for every error thrown by ZCA-MT's own code (as opposed to
+ * Base class for every error thrown by zca-mt's own code (as opposed to
  * errors re-exported from the original `zca-js` project, such as
  * `ZaloApiError`).
  */

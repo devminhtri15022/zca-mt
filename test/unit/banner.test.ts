@@ -13,12 +13,12 @@ describe("printBanner", () => {
         logSpy.mockRestore();
     });
 
-    it("prints a banner mentioning @zcamt when logging is enabled", () => {
+    it("prints a banner mentioning @zca-mt when logging is enabled", () => {
         printBanner({ options: { logging: true } } as never);
 
         expect(logSpy).toHaveBeenCalledTimes(1);
         const printed = logSpy.mock.calls[0].join(" ");
-        expect(printed).toContain("@zcamt");
+        expect(printed).toContain("@zca-mt");
     });
 
     it("does nothing when logging is disabled", () => {

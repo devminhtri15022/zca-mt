@@ -8,7 +8,7 @@ import { ValidationError } from "./Errors/ValidationError.js";
  * {@link ValidationError} instead of silently sending malformed data to
  * Zalo's upload endpoint.
  *
- * This is optional — ZCA-MT does not wrap your getter automatically.
+ * This is optional — zca-mt does not wrap your getter automatically.
  *
  * @example
  * ```ts

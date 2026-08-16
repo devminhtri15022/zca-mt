@@ -2,7 +2,14 @@ import { describe, expect, it, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { saveSession, loadSession, deleteSession, isSavedSession } from "../../src/session.js";
+import {
+    saveSession,
+    loadSession,
+    deleteSession,
+    isSavedSession,
+    saveEncryptedSession,
+    loadEncryptedSession,
+} from "../../src/session.js";
 import { SessionError } from "../../src/Errors/SessionError.js";
 
 function tmpFile(): string {
@@ -102,5 +109,21 @@ describe("session helpers", () => {
         expect(isSavedSession({ imei: "i" })).toBe(false);
         expect(isSavedSession(null)).toBe(false);
         expect(isSavedSession("nope")).toBe(false);
+    });
+
+    it("round-trips an encrypted session without storing plaintext credentials", () => {
+        const file = tmpFile();
+        files.push(file);
+        const session = { imei: "private-imei", userAgent: "agent", cookie: [] };
+        saveEncryptedSession(file, session, "a-strong-test-passphrase");
+        expect(fs.readFileSync(file, "utf8")).not.toContain("private-imei");
+        expect(loadEncryptedSession(file, "a-strong-test-passphrase")).toEqual(session);
+    });
+
+    it("rejects a wrong encrypted-session passphrase", () => {
+        const file = tmpFile();
+        files.push(file);
+        saveEncryptedSession(file, { imei: "i", userAgent: "u", cookie: [] }, "correct-passphrase-123");
+        expect(() => loadEncryptedSession(file, "incorrect-passphrase")).toThrow(SessionError);
     });
 });

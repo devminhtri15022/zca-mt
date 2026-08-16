@@ -100,5 +100,5 @@
     "ts-node": {
         "esm": true
     },
-    "exclude": ["examples", "test", "dist", "vitest.config.ts"]
+    "exclude": ["examples", "test", "dist", "vitest.config.ts", "zca-mt"]
 }
