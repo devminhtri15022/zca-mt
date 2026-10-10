@@ -32,10 +32,12 @@ real-time events, and send messages, images, files, stickers, video, and voice.
 - First-class TypeScript declarations
 - ESM and CommonJS builds
 - Optional local session persistence
+- Per-thread command queues, request limits, health snapshots, and bounded reconnect backoff
 
 ## 📋 Requirements
 
-- [Node.js](https://nodejs.org/) **20 or newer**
+- [Node.js](https://nodejs.org/) **20 or newer**. CI tests Node 20, 22, 24,
+  and the latest stable Node release on Linux and Windows.
 - npm or another compatible package manager
 
 ## 🚀 Getting started
@@ -68,6 +70,25 @@ const zca = new ZcaMT({
     checkUpdate: true, // Check for known incompatible client versions
     logging: true, // Enable redacted ZCA-MT logs
 });
+```
+
+### Stronger session protection
+
+```ts
+import {
+    saveEncryptedSession,
+    loadEncryptedSession,
+    saveSessionAsync,
+    loadEncryptedSessionAsync,
+    deleteSessionAsync,
+} from "zca-mt";
+
+const sessionPath = "./.zca-mt/session.json";
+const passphrase = "a-strong-32char-passphrase-here";
+
+await saveEncryptedSessionAsync(sessionPath, api.getContext(), passphrase);
+const restored = await loadEncryptedSessionAsync(sessionPath, passphrase);
+await deleteSessionAsync(sessionPath);
 ```
 
 ## 💡 Usage
@@ -178,6 +199,7 @@ await api.sendMessage(
 ```ts
 function shutdown(signal: string) {
     console.log(`Received ${signal}. Stopping ZCA-MT...`);
+    router.close(); // Reject commands that have not started; active handlers finish normally.
     api.listener.stop();
     process.exitCode = 0;
 }
@@ -185,6 +207,158 @@ function shutdown(signal: string) {
 process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 ```
+
+### Production hardening for long-running bots
+
+The listener already sends the protocol ping required by the active Zalo
+connection. For monitoring and bounded recovery, enable reconnects and health
+snapshots:
+
+```ts
+api.listener.on("health", (health) => {
+    if (!health.healthy) {
+        console.warn("ZCA-MT listener is unhealthy", {
+            state: health.state,
+            silenceMs: health.silenceMs,
+            reconnectAttempts: health.reconnectAttempts,
+        });
+    }
+});
+
+api.listener.start({
+    retryOnClose: true,
+    continuousReconnect: true,
+    retryBackoffFactor: 1.5,
+    reconnectCooldownMs: 1_000,
+    maxRetryDelayMs: 30_000,
+    healthCheckIntervalMs: 30_000,
+});
+```
+
+`continuousReconnect` keeps retrying only close codes configured by the
+protocol client as recoverable, even after its finite retry schedule is
+exhausted. Its backoff remains capped by `maxRetryDelayMs`; it does not retry
+authentication, kick, or other close codes that are not configured as
+recoverable. Without this option reconnect attempts are bounded by
+`maxReconnectAttempts` (default: 20).
+Use `api.listener.getHealthSnapshot()` for an on-demand snapshot. A health
+event is observability, not a guarantee that the process, network, or account
+will remain available; use a process manager and handle `closed` and `error`
+events in your application.
+
+`CommandRouter` serializes commands within each thread, applies both per-thread
+and optional global limits, bounds queued work, and accepts an `AbortSignal`:
+
+```ts
+import { CommandRouter, RateLimiter } from "zca-mt";
+
+const router = new CommandRouter({
+    rateLimit: { maxCalls: 5, intervalMs: 60_000, maxQueueSize: 10 },
+    globalRateLimit: { maxCalls: 20, intervalMs: 60_000, maxQueueSize: 50 },
+    maxPendingPerThread: 20,
+    maxPendingCommands: 500,
+    maxConcurrentCommands: 20,
+});
+
+router.register("ping", async ({ threadId, signal }) => {
+    if (signal?.aborted) return;
+    // Handle one command at a time for this thread.
+});
+
+// For a scheduled, opt-in API operation, a limiter can cap traffic to one
+// request per two hours. tryAcquire() drops/skips work instead of building
+// a backlog that would run later.
+const maintenanceRequestLimit = new RateLimiter({
+    maxCalls: 1,
+    intervalMs: 2 * 60 * 60 * 1_000,
+    cooldownMs: 2 * 60 * 60 * 1_000,
+    maxQueueSize: 0,
+});
+
+if (maintenanceRequestLimit.tryAcquire()) {
+    await api.fetchAccountInfo();
+}
+```
+
+This two-hour setting is a request cap, not a scheduler or a keep-alive
+requirement. ZCA-MT does not send extra account requests to keep a bot alive.
+Keep any scheduled work authorized, necessary, and compliant with Zalo's
+usage rules; an in-memory limiter resets when the process restarts.
+
+For operations that are explicitly safe to repeat, `retryIdempotent` uses
+bounded exponential backoff and honors `retryAfterMs` / HTTP `Retry-After`
+hints. Do not wrap message sends or other non-idempotent writes in automatic
+retries.
+
+### Run the production example under a process manager
+
+[`examples/production-bot.ts`](./examples/production-bot.ts) demonstrates
+encrypted session reuse, attended QR login when needed, allowed-thread checks,
+in-process duplicate-message suppression, health/error logs, continuous
+reconnect for configured recoverable socket errors, and bounded graceful
+shutdown. It intentionally **does not** repeatedly send requests to keep the
+account online.
+
+Install dependencies, then inject secrets and permitted thread IDs through
+your host's secret manager or service environment. The repository's
+`.env.example` is a template only; the example does not load `.env`
+automatically.
+
+```bash
+npm ci --include=dev
+export ZCA_MT_ALLOWED_THREAD_IDS='thread-id-1,thread-id-2'
+# Inject ZCA_MT_SESSION_PASSPHRASE from the host secret manager; do not put
+# the real passphrase in shell history or a committed environment file.
+npm run build
+```
+
+On a first run, use an attended QR login. The resulting session is encrypted
+at `ZCA_MT_SESSION_PATH` (default: `.zca-mt/session.json`). If the session
+expires, set `ZCA_MT_FORCE_QR=1` for an attended re-authentication; do not
+automatically delete or replace a session after an arbitrary login/network
+error. Unset `ZCA_MT_FORCE_QR` after re-authentication. Keep the encryption
+passphrase outside the repository and restrict access to the session directory.
+
+For PM2, start one process (do not run multiple instances with the same Zalo
+account/session):
+
+```bash
+npm install --global pm2
+pm2 start ecosystem.config.cjs --env production
+pm2 save
+pm2 startup
+pm2 status
+pm2 logs zca-mt-bot
+```
+
+Run the `pm2 startup` command that PM2 prints for your server so the saved
+process list is restored after reboot. PM2 restarts the process after an
+uncaught startup failure or nonzero exit; the example exits nonzero when the
+listener closes permanently. It handles `SIGINT`/`SIGTERM`, closes queued
+commands, waits up to 10 seconds for active commands, then exits within the
+configured supervisor kill timeout.
+
+Alternatively, adapt
+[`examples/zca-mt-bot.service`](./examples/zca-mt-bot.service) for the
+deployment path and dedicated unprivileged service user. Store
+`ZCA_MT_SESSION_PASSPHRASE` and `ZCA_MT_ALLOWED_THREAD_IDS` in the referenced
+root-owned environment file with restrictive permissions (for example mode
+`0600`) or use a system secret manager; never put secrets in a committed unit
+file. Then install and enable the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now zca-mt-bot
+sudo systemctl status zca-mt-bot
+sudo journalctl -u zca-mt-bot -f
+```
+
+Before a long unattended run, test a network interruption, a process restart,
+a machine reboot, and an expired session. Confirm that recoverable network
+close codes reconnect, that non-recoverable/authentication closures alert and
+exit for operator action, and that the process manager brings the process
+back. Message duplicate suppression in the example is memory-only and expires
+after 10 minutes; it is not a durable exactly-once guarantee across restarts.
 
 ## 🧩 API overview
 

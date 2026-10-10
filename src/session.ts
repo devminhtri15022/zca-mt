@@ -152,9 +152,27 @@ export async function saveSessionAsync(filePath: string, session: SavedSession):
     saveSession(filePath, session);
 }
 
+export async function saveEncryptedSessionAsync(
+    filePath: string,
+    session: SavedSession,
+    passphrase: string,
+): Promise<void> {
+    await fsPromises.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    saveEncryptedSession(filePath, session, passphrase);
+}
+
 export async function loadSessionAsync(filePath: string, options: SessionLoadOptions = {}): Promise<SavedSession> {
     await fsPromises.access(filePath);
     return loadSession(filePath, options);
+}
+
+export async function loadEncryptedSessionAsync(
+    filePath: string,
+    passphrase: string,
+    options: SessionLoadOptions = {},
+): Promise<SavedSession> {
+    await fsPromises.access(filePath);
+    return loadEncryptedSession(filePath, passphrase, options);
 }
 
 /**
@@ -227,5 +245,17 @@ export function isSavedSession(value: unknown): value is SavedSession {
 export function deleteSession(filePath: string): void {
     if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
+    }
+}
+
+export async function deleteSessionAsync(filePath: string): Promise<void> {
+    try {
+        await fsPromises.unlink(filePath);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+        throw new SessionError(`Unable to delete session file: ${filePath}`, {
+            code: "SESSION_DELETE_FAILED",
+            cause: error,
+        });
     }
 }

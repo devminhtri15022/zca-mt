@@ -1,0 +1,21 @@
+[Unit]
+Description=ZCA-MT personal-account bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zca-mt
+Group=zca-mt
+WorkingDirectory=/opt/zca-mt
+EnvironmentFile=/etc/zca-mt-bot.env
+ExecStart=/usr/bin/npm run start:production-bot
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

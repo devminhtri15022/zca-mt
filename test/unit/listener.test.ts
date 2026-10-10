@@ -22,6 +22,10 @@ class FakeWebSocket {
     close() {
         this.readyState = 3; // CLOSED
     }
+
+    terminate() {
+        this.readyState = 3; // CLOSED
+    }
 }
 
 vi.mock("ws", () => ({
@@ -41,6 +45,9 @@ function makeFakeCtx() {
             features: {
                 socket: {
                     retries: {},
+                    close_and_retry_codes: [3003],
+                    rotate_error_codes: [],
+                    ping_interval: 10_000,
                 },
             },
         },
@@ -116,5 +123,103 @@ describe("Listener lifecycle", () => {
         const ws = FakeWebSocket.instances[0];
         expect(() => ws.onerror?.({ message: "boom" })).not.toThrow();
         expect(onError).toHaveBeenCalledTimes(1);
+    });
+
+    it("exposes connection health snapshots", () => {
+        const listener = new Listener(makeFakeCtx(), ["wss://example.invalid/ws"]);
+        listener.start({ heartbeatTimeoutMs: 0, healthCheckIntervalMs: 0, stableConnectionMs: 0 });
+        FakeWebSocket.instances[0].onopen?.();
+
+        const health = listener.getHealthSnapshot();
+        expect(health.state).toBe("connected");
+        expect(health.healthy).toBe(true);
+        expect(health.lastActivityAt).toBeGreaterThan(0);
+        listener.stop();
+    });
+
+    it("applies exponential reconnect backoff after repeated network closes", async () => {
+        vi.useFakeTimers();
+        try {
+            const ctx = makeFakeCtx();
+            ctx.settings.features.socket.retries = {
+                "3003": { times: [10, 10, 10], max: 3 },
+            };
+            const listener = new Listener(ctx, ["wss://example.invalid/ws"]);
+            const reconnecting = vi.fn();
+            listener.on("reconnecting", reconnecting);
+            const options = {
+                retryOnClose: true,
+                retryJitter: 0,
+                maxRetryDelayMs: 100,
+                reconnectCooldownMs: 0,
+                retryBackoffFactor: 2,
+                maxReconnectAttempts: 5,
+                stableConnectionMs: 10_000,
+                heartbeatTimeoutMs: 0,
+                healthCheckIntervalMs: 0,
+            } as const;
+
+            listener.start(options);
+            FakeWebSocket.instances[0].onopen?.();
+            FakeWebSocket.instances[0].onclose?.({ code: 3003, reason: "network" });
+            expect(reconnecting).toHaveBeenLastCalledWith(1, 10, 3003);
+
+            await vi.advanceTimersByTimeAsync(10);
+            FakeWebSocket.instances[1].onopen?.();
+            FakeWebSocket.instances[1].onclose?.({ code: 3003, reason: "network" });
+            expect(reconnecting).toHaveBeenLastCalledWith(2, 20, 3003);
+            listener.stop();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("continues configured recoverable reconnects after protocol retry limits", async () => {
+        vi.useFakeTimers();
+        try {
+            const ctx = makeFakeCtx();
+            ctx.settings.features.socket.retries = {
+                "3003": { times: [10], max: 1 },
+            };
+            const listener = new Listener(ctx, ["wss://example.invalid/ws"]);
+            const reconnecting = vi.fn();
+            listener.on("reconnecting", reconnecting);
+            listener.start({
+                retryOnClose: true,
+                continuousReconnect: true,
+                retryJitter: 0,
+                maxRetryDelayMs: 100,
+                reconnectCooldownMs: 0,
+                retryBackoffFactor: 2,
+                maxReconnectAttempts: 1,
+                stableConnectionMs: 10_000,
+                heartbeatTimeoutMs: 0,
+                healthCheckIntervalMs: 0,
+            });
+            FakeWebSocket.instances[0].onopen?.();
+            FakeWebSocket.instances[0].onclose?.({ code: 3003, reason: "network" });
+            expect(reconnecting).toHaveBeenLastCalledWith(1, 10, 3003);
+
+            await vi.advanceTimersByTimeAsync(10);
+            FakeWebSocket.instances[1].onopen?.();
+            FakeWebSocket.instances[1].onclose?.({ code: 3003, reason: "network" });
+            expect(reconnecting).toHaveBeenLastCalledWith(2, 100, 3003);
+            expect(listener.getState()).toBe("reconnecting");
+            listener.stop();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("does not continuously reconnect for unconfigured close codes", () => {
+        const listener = new Listener(makeFakeCtx(), ["wss://example.invalid/ws"]);
+        const closed = vi.fn();
+        listener.on("closed", closed);
+        listener.start({ retryOnClose: true, continuousReconnect: true, healthCheckIntervalMs: 0 });
+        FakeWebSocket.instances[0].onclose?.({ code: 4001, reason: "not recoverable" });
+
+        expect(closed).toHaveBeenCalledWith(4001, "not recoverable");
+        expect(listener.getState()).toBe("idle");
+        expect(FakeWebSocket.instances).toHaveLength(1);
     });
 });

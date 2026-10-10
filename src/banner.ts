@@ -16,7 +16,7 @@ export function printBanner(ctx: ContextBase) {
     bannerPrinted = true;
 
     const log = logger(ctx);
-    log.info(`@zcamt v${ZCA_MT_VERSION} — unofficial Zalo API`);
+    log.info(`@zca-mt v${ZCA_MT_VERSION} — unofficial Zalo API`);
 }
 
 /** Test-only helper to reset the one-time banner guard between test runs. */

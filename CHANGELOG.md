@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.3
+
+- Added long-running bot production example with encrypted session reuse,
+  graceful shutdown, health monitoring, deduplication, and deployment templates.
+- Added continuous reconnect for configured recoverable websocket close codes.
+- Hardened bot command queues, request cooldown behavior, and idempotent retries.
+- Expanded CI coverage to Node.js 20, 22, 24, and latest stable on Linux and Windows.
+
 ## 1.2.1
 
 - Standardized all current product-facing names and messages to lowercase `zca-mt`.

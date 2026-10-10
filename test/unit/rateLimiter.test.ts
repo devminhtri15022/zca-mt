@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RateLimiter } from "../../src/rateLimiter.js";
 import { RateLimitError } from "../../src/Errors/RateLimitError.js";
 
@@ -62,9 +62,41 @@ describe("RateLimiter", () => {
         expect(order).toEqual([1, 2]);
     });
 
-    it("reports and enforces queue capacity", () => {
+    it("reports and enforces queue capacity", async () => {
         const limiter = new RateLimiter({ maxCalls: 1, intervalMs: 1000, maxQueueSize: 0 });
         limiter.acquire();
-        expect(limiter.wait()).rejects.toThrow(RateLimitError);
+        await expect(limiter.wait()).rejects.toThrow(RateLimitError);
+    });
+
+    it("supports a one-shot cooldown for bot traffic", () => {
+        const limiter = new RateLimiter({
+            maxCalls: 1,
+            intervalMs: 60_000,
+            releaseEveryMs: 2 * 60 * 60 * 1000,
+        });
+        expect(limiter.tryAcquire(0)).toBe(true);
+        expect(limiter.tryAcquire(1)).toBe(false);
+        expect(limiter.nextAvailableInMs(1)).toBeGreaterThanOrEqual(2 * 60 * 60 * 1000 - 1);
+        expect(limiter.tryAcquire(60_001)).toBe(false);
+    });
+
+    it("releases queued calls one at a time with configured spacing", async () => {
+        vi.useFakeTimers();
+        try {
+            const limiter = new RateLimiter({ maxCalls: 3, intervalMs: 1000, releaseEveryMs: 100 });
+            limiter.acquire();
+            const first = limiter.wait();
+            const second = limiter.wait();
+
+            await vi.advanceTimersByTimeAsync(100);
+            await first;
+            expect(limiter.snapshot().queued).toBe(1);
+
+            await vi.advanceTimersByTimeAsync(100);
+            await second;
+            expect(limiter.snapshot().queued).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

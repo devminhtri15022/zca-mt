@@ -211,7 +211,7 @@ export type { CustomAPICallback, CustomAPIProps } from "./apis/custom.js";
 
 // Others (Enum)
 export { CloseReason } from "./apis/listen.js";
-export type { ListenerStartOptions, ListenerState, WsPayload } from "./apis/listen.js";
+export type { ListenerHealthSnapshot, ListenerStartOptions, ListenerState, WsPayload } from "./apis/listen.js";
 export { LoginQRCallbackEventType } from "./apis/loginQR.js";
 export { FriendRecommendationsType } from "./apis/getFriendRecommendations.js";
 export { ReviewPendingMemberRequestStatus } from "./apis/reviewPendingMemberRequest.js";

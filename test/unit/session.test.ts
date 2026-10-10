@@ -6,9 +6,14 @@ import {
     saveSession,
     loadSession,
     deleteSession,
+    saveSessionAsync,
+    loadSessionAsync,
+    deleteSessionAsync,
     isSavedSession,
     saveEncryptedSession,
     loadEncryptedSession,
+    saveEncryptedSessionAsync,
+    loadEncryptedSessionAsync,
 } from "../../src/session.js";
 import { SessionError } from "../../src/Errors/SessionError.js";
 
@@ -118,6 +123,21 @@ describe("session helpers", () => {
         saveEncryptedSession(file, session, "a-strong-test-passphrase");
         expect(fs.readFileSync(file, "utf8")).not.toContain("private-imei");
         expect(loadEncryptedSession(file, "a-strong-test-passphrase")).toEqual(session);
+    });
+
+    it("supports async encrypted session helpers", async () => {
+        const file = tmpFile();
+        files.push(file);
+        const session = { imei: "async-imei", userAgent: "async-agent", cookie: [{ name: "x", value: "y" }] };
+
+        await saveSessionAsync(file, session as never);
+        expect(await loadSessionAsync(file)).toEqual(session);
+
+        await deleteSessionAsync(file);
+        expect(fs.existsSync(file)).toBe(false);
+
+        await saveEncryptedSessionAsync(file, session, "a-strong-test-passphrase");
+        expect(await loadEncryptedSessionAsync(file, "a-strong-test-passphrase")).toEqual(session);
     });
 
     it("rejects a wrong encrypted-session passphrase", () => {

@@ -28,19 +28,39 @@ export type OnErrorCallback = (error: unknown) => unknown;
 
 export type ListenerStartOptions = {
     retryOnClose?: boolean;
+    /** Keep retrying configured recoverable close codes after protocol retry limits are exhausted. Default: false. */
+    continuousReconnect?: boolean;
     /** Random delay spread (0..1) used to avoid reconnect storms. Default: 0.2. */
     retryJitter?: number;
     /** Upper bound for a single reconnect delay. Default: 30 seconds. */
     maxRetryDelayMs?: number;
+    /** A short, hard cooldown between reconnect attempts to prevent reconnect thrash. Default: 1 second. */
+    reconnectCooldownMs?: number;
+    /** Exponential multiplier applied to the protocol retry delay. Default: 1.5. */
+    retryBackoffFactor?: number;
+    /** Maximum reconnect attempts before the listener gives up and emits `closed`. Default: 20. */
+    maxReconnectAttempts?: number;
     /** Time allowed for the websocket handshake. Default: 15 seconds. */
     connectTimeoutMs?: number;
     /** Reset retry counters after a healthy connection. Default: 30 seconds. */
     stableConnectionMs?: number;
     /** Terminate a silent connection after this period. Set 0 to disable. Default: 90 seconds. */
     heartbeatTimeoutMs?: number;
+    /** Emit periodic health snapshots. Set 0 to disable. Default: 30 seconds. */
+    healthCheckIntervalMs?: number;
 };
 
 export type ListenerState = "idle" | "connecting" | "connected" | "reconnecting" | "stopped";
+
+export type ListenerHealthSnapshot = {
+    state: ListenerState;
+    healthy: boolean;
+    connectedForMs: number;
+    silenceMs: number;
+    reconnectAttempts: number;
+    lastActivityAt: number;
+    observedAt: number;
+};
 
 export enum CloseReason {
     ManualClosure = 1000,
@@ -68,6 +88,7 @@ interface ListenerEvents {
     cipher_key: [key: string];
     reconnecting: [attempt: number, delayMs: number, code: CloseReason];
     state: [state: ListenerState];
+    health: [snapshot: ListenerHealthSnapshot];
 }
 
 export class Listener extends EventEmitter<ListenerEvents> {
@@ -98,9 +119,13 @@ export class Listener extends EventEmitter<ListenerEvents> {
     private connectTimer?: NodeJS.Timeout;
     private stableTimer?: NodeJS.Timeout;
     private heartbeatTimer?: NodeJS.Timeout;
+    private healthTimer?: NodeJS.Timeout;
     private lastActivityAt = 0;
+    private connectedAt = 0;
+    private activeHeartbeatTimeoutMs = 90_000;
     private state: ListenerState = "idle";
     private manuallyStopped = false;
+    private reconnectAttempts = 0;
 
     private id = 0;
 
@@ -192,10 +217,26 @@ export class Listener extends EventEmitter<ListenerEvents> {
     private resetRetryCounters() {
         for (const retry of Object.values(this.retryCount)) retry.count = 0;
         this.rotateCount = 0;
+        this.reconnectAttempts = 0;
     }
 
     public getState(): ListenerState {
         return this.state;
+    }
+
+    public getHealthSnapshot(now: number = Date.now()): ListenerHealthSnapshot {
+        const silenceMs = this.lastActivityAt > 0 ? Math.max(0, now - this.lastActivityAt) : 0;
+        return {
+            state: this.state,
+            healthy:
+                this.state === "connected" &&
+                (this.activeHeartbeatTimeoutMs === 0 || silenceMs <= this.activeHeartbeatTimeoutMs),
+            connectedForMs: this.connectedAt > 0 ? Math.max(0, now - this.connectedAt) : 0,
+            silenceMs,
+            reconnectAttempts: this.reconnectAttempts,
+            lastActivityAt: this.lastActivityAt,
+            observedAt: now,
+        };
     }
 
     private shouldRotate(code: CloseReason) {
@@ -215,20 +256,49 @@ export class Listener extends EventEmitter<ListenerEvents> {
 
     public start({
         retryOnClose = false,
+        continuousReconnect = false,
         retryJitter = 0.2,
         maxRetryDelayMs = 30_000,
+        reconnectCooldownMs = 1_000,
+        retryBackoffFactor = 1.5,
+        maxReconnectAttempts = 20,
         connectTimeoutMs = 15_000,
         stableConnectionMs = 30_000,
         heartbeatTimeoutMs = 90_000,
+        healthCheckIntervalMs = 30_000,
     }: ListenerStartOptions = {}) {
-        if (this.ws) throw new ZaloApiError("Already started");
-        if (retryJitter < 0 || retryJitter > 1) throw new RangeError("retryJitter must be between 0 and 1");
-        if (maxRetryDelayMs <= 0) throw new RangeError("maxRetryDelayMs must be positive");
-        if (connectTimeoutMs <= 0) throw new RangeError("connectTimeoutMs must be positive");
-        if (stableConnectionMs < 0) throw new RangeError("stableConnectionMs cannot be negative");
-        if (heartbeatTimeoutMs < 0) throw new RangeError("heartbeatTimeoutMs cannot be negative");
+        if (this.ws || this.reconnectTimer) throw new ZaloApiError("Already started");
+        if (!Number.isFinite(retryJitter) || retryJitter < 0 || retryJitter > 1) {
+            throw new RangeError("retryJitter must be between 0 and 1");
+        }
+        if (!Number.isFinite(maxRetryDelayMs) || maxRetryDelayMs <= 0) {
+            throw new RangeError("maxRetryDelayMs must be positive");
+        }
+        if (!Number.isFinite(reconnectCooldownMs) || reconnectCooldownMs < 0) {
+            throw new RangeError("reconnectCooldownMs must be non-negative");
+        }
+        if (!Number.isFinite(retryBackoffFactor) || retryBackoffFactor < 1) {
+            throw new RangeError("retryBackoffFactor must be at least 1");
+        }
+        if (!Number.isInteger(maxReconnectAttempts) || maxReconnectAttempts <= 0) {
+            throw new RangeError("maxReconnectAttempts must be a positive integer");
+        }
+        if (!Number.isFinite(connectTimeoutMs) || connectTimeoutMs <= 0) {
+            throw new RangeError("connectTimeoutMs must be positive");
+        }
+        if (!Number.isFinite(stableConnectionMs) || stableConnectionMs < 0) {
+            throw new RangeError("stableConnectionMs cannot be negative");
+        }
+        if (!Number.isFinite(heartbeatTimeoutMs) || heartbeatTimeoutMs < 0) {
+            throw new RangeError("heartbeatTimeoutMs cannot be negative");
+        }
+        if (!Number.isFinite(healthCheckIntervalMs) || healthCheckIntervalMs < 0) {
+            throw new RangeError("healthCheckIntervalMs cannot be negative");
+        }
 
+        if (this.state !== "reconnecting") this.resetRetryCounters();
         this.manuallyStopped = false;
+        this.activeHeartbeatTimeoutMs = heartbeatTimeoutMs;
         this.setState(this.state === "reconnecting" ? "reconnecting" : "connecting");
 
         const ws = new WebSocket(this.wsURL, {
@@ -263,6 +333,7 @@ export class Listener extends EventEmitter<ListenerEvents> {
                 this.connectTimer = undefined;
             }
             this.lastActivityAt = Date.now();
+            this.connectedAt = this.lastActivityAt;
             this.setState("connected");
             if (stableConnectionMs === 0) this.resetRetryCounters();
             else {
@@ -279,6 +350,11 @@ export class Listener extends EventEmitter<ListenerEvents> {
                     }
                 }, Math.max(1_000, Math.min(heartbeatTimeoutMs / 2, 30_000)));
             }
+            if (healthCheckIntervalMs > 0) {
+                this.healthTimer = setInterval(() => {
+                    if (this.ws === ws) this.emit("health", this.getHealthSnapshot());
+                }, healthCheckIntervalMs);
+            }
             this.onConnectedCallback();
             this.emit("connected");
         };
@@ -286,31 +362,51 @@ export class Listener extends EventEmitter<ListenerEvents> {
         ws.onclose = (event) => {
             this.reset();
             this.emit("disconnected", event.code as CloseReason, event.reason);
-            const retry = !this.manuallyStopped && retryOnClose && this.canRetry(event.code as CloseReason);
-            if (retry && retryOnClose) {
+            const canContinue =
+                continuousReconnect &&
+                this.ctx.settings.features.socket.close_and_retry_codes.includes(event.code as CloseReason);
+            const protocolRetry = !this.manuallyStopped && retryOnClose ? this.canRetry(event.code as CloseReason) : false;
+            const shouldRetry = !this.manuallyStopped && retryOnClose && (protocolRetry || canContinue);
+            if (shouldRetry) {
                 const shouldRotate = this.shouldRotate(event.code as CloseReason);
                 if (shouldRotate) {
                     this.rotateEndpoint();
                 }
-                const spread = retry * retryJitter;
-                const delay = Math.min(maxRetryDelayMs, Math.max(1, Math.round(retry - spread + Math.random() * spread * 2)));
-                const attempt = this.retryCount[event.code.toString()]?.count ?? 1;
+                const attempt = this.reconnectAttempts + 1;
+                if (!continuousReconnect && attempt > maxReconnectAttempts) {
+                    this.setState(this.manuallyStopped ? "stopped" : "idle");
+                    this.onClosedCallback(event.code, event.reason);
+                    this.emit("closed", event.code as CloseReason, event.reason);
+                    return;
+                }
+                this.reconnectAttempts = attempt;
+                const baseDelay = protocolRetry || maxRetryDelayMs;
+                const exponentialDelay = Math.min(maxRetryDelayMs, baseDelay * retryBackoffFactor ** (attempt - 1));
+                const spread = exponentialDelay * retryJitter;
+                const delay = Math.round(exponentialDelay - spread + Math.random() * spread * 2);
+                const reconnectDelay = Math.min(maxRetryDelayMs, Math.max(1, reconnectCooldownMs, delay));
                 this.setState("reconnecting");
-                this.emit("reconnecting", attempt, delay, event.code as CloseReason);
+                this.emit("reconnecting", attempt, reconnectDelay, event.code as CloseReason);
                 this.reconnectTimer = setTimeout(() => {
                     this.reconnectTimer = undefined;
                     if (!this.manuallyStopped) {
                         this.start({
                             retryOnClose: true,
+                            continuousReconnect,
                             retryJitter,
                             maxRetryDelayMs,
+                            reconnectCooldownMs,
+                            retryBackoffFactor,
+                            maxReconnectAttempts,
                             connectTimeoutMs,
                             stableConnectionMs,
                             heartbeatTimeoutMs,
+                            healthCheckIntervalMs,
                         });
                     }
-                }, delay);
+                }, reconnectDelay);
             } else {
+                this.reconnectAttempts = 0;
                 this.setState(this.manuallyStopped ? "stopped" : "idle");
                 this.onClosedCallback(event.code, event.reason);
                 this.emit("closed", event.code as CloseReason, event.reason);
@@ -576,6 +672,7 @@ export class Listener extends EventEmitter<ListenerEvents> {
 
     public stop() {
         this.manuallyStopped = true;
+        this.reconnectAttempts = 0;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = undefined;
@@ -656,6 +753,11 @@ export class Listener extends EventEmitter<ListenerEvents> {
             clearInterval(this.heartbeatTimer);
             this.heartbeatTimer = undefined;
         }
+        if (this.healthTimer) {
+            clearInterval(this.healthTimer);
+            this.healthTimer = undefined;
+        }
+        this.connectedAt = 0;
     }
 }
 

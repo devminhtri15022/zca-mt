@@ -5,6 +5,11 @@ export type RateLimiterOptions = {
     maxCalls?: number;
     /** Length of the sliding window in milliseconds. Default: 60_000 (1 minute). */
     intervalMs?: number;
+    /** Optional hard cooldown in milliseconds between releases. Useful for one-shot bot jobs.
+     * Example: `maxCalls: 1, intervalMs: 2 * 60 * 60 * 1000` allows one request every 2 hours. */
+    cooldownMs?: number;
+    /** Optional minimum spacing between admitted calls, even when queue is empty. */
+    releaseEveryMs?: number;
     /** Maximum number of callers waiting in the async queue. Default: 100. */
     maxQueueSize?: number;
 };
@@ -45,21 +50,32 @@ type PendingAcquire = {
 export class RateLimiter {
     private readonly maxCalls: number;
     private readonly intervalMs: number;
+    private readonly cooldownMs: number;
+    private readonly releaseEveryMs: number;
     private readonly maxQueueSize: number;
     private timestamps: number[] = [];
+    private lastAcquiredAt?: number;
     private readonly queue: PendingAcquire[] = [];
     private queueTimer?: NodeJS.Timeout;
 
     constructor(options: RateLimiterOptions = {}) {
         this.maxCalls = options.maxCalls ?? 20;
         this.intervalMs = options.intervalMs ?? 60_000;
+        this.cooldownMs = options.cooldownMs ?? 0;
+        this.releaseEveryMs = options.releaseEveryMs ?? 0;
         this.maxQueueSize = options.maxQueueSize ?? 100;
 
-        if (this.maxCalls <= 0) {
-            throw new RangeError("RateLimiter: maxCalls must be a positive number");
+        if (!Number.isInteger(this.maxCalls) || this.maxCalls <= 0) {
+            throw new RangeError("RateLimiter: maxCalls must be a positive integer");
         }
-        if (this.intervalMs <= 0) {
+        if (!Number.isFinite(this.intervalMs) || this.intervalMs <= 0) {
             throw new RangeError("RateLimiter: intervalMs must be a positive number");
+        }
+        if (!Number.isFinite(this.cooldownMs) || this.cooldownMs < 0) {
+            throw new RangeError("RateLimiter: cooldownMs must be non-negative");
+        }
+        if (!Number.isFinite(this.releaseEveryMs) || this.releaseEveryMs < 0) {
+            throw new RangeError("RateLimiter: releaseEveryMs must be non-negative");
         }
         if (!Number.isInteger(this.maxQueueSize) || this.maxQueueSize < 0) {
             throw new RangeError("RateLimiter: maxQueueSize must be a non-negative integer");
@@ -71,16 +87,25 @@ export class RateLimiter {
         this.timestamps = this.timestamps.filter((ts) => ts > cutoff);
     }
 
+    private effectiveReleaseEveryMs(now: number) {
+        const minimum = Math.max(this.releaseEveryMs, this.cooldownMs);
+        if (minimum <= 0) return 0;
+        if (this.lastAcquiredAt === undefined) return 0;
+        return Math.max(0, this.lastAcquiredAt + minimum - now);
+    }
+
     /**
      * Returns true and records a call if under budget; otherwise returns false
      * without side effects (non-throwing variant).
      */
     public tryAcquire(now: number = Date.now()): boolean {
         this.prune(now);
-        // Do not let new callers jump ahead of callers already waiting.
         if (this.queue.length > 0) return false;
         if (this.timestamps.length >= this.maxCalls) return false;
+        const spacingDelay = this.effectiveReleaseEveryMs(now);
+        if (spacingDelay > 0) return false;
         this.timestamps.push(now);
+        this.lastAcquiredAt = now;
         return true;
     }
 
@@ -92,11 +117,19 @@ export class RateLimiter {
         if (this.queue.length > 0 || this.timestamps.length >= this.maxCalls) {
             const oldest = this.timestamps[0];
             const retryAfterMs = oldest === undefined ? 0 : Math.max(0, oldest + this.intervalMs - now);
+            const cooldownDelay = this.effectiveReleaseEveryMs(now);
             throw new RateLimitError(`Rate limit exceeded: more than ${this.maxCalls} calls in ${this.intervalMs}ms`, {
-                retryAfterMs,
+                retryAfterMs: Math.max(retryAfterMs, cooldownDelay),
+            });
+        }
+        const spacingDelay = this.effectiveReleaseEveryMs(now);
+        if (spacingDelay > 0) {
+            throw new RateLimitError(`Rate limit cooldown in effect for ${spacingDelay}ms`, {
+                retryAfterMs: spacingDelay,
             });
         }
         this.timestamps.push(now);
+        this.lastAcquiredAt = now;
     }
 
     /** Number of calls currently counted within the active window. */
@@ -109,14 +142,16 @@ export class RateLimiter {
     public snapshot(now: number = Date.now()): RateLimiterSnapshot {
         this.prune(now);
         const oldest = this.timestamps[0];
+        const spacingDelay = this.effectiveReleaseEveryMs(now);
+        const retryAfterMs =
+            this.timestamps.length >= this.maxCalls && oldest !== undefined
+                ? Math.max(0, oldest + this.intervalMs - now)
+                : 0;
         return {
             active: this.timestamps.length,
             remaining: Math.max(0, this.maxCalls - this.timestamps.length),
             queued: this.queue.length,
-            retryAfterMs:
-                this.timestamps.length >= this.maxCalls && oldest !== undefined
-                    ? Math.max(0, oldest + this.intervalMs - now)
-                    : 0,
+            retryAfterMs: Math.max(retryAfterMs, spacingDelay),
         };
     }
 
@@ -157,31 +192,46 @@ export class RateLimiter {
             clearTimeout(this.queueTimer);
             this.queueTimer = undefined;
         }
-        this.prune(Date.now());
-        while (this.queue.length > 0 && this.timestamps.length < this.maxCalls) {
+        const now = Date.now();
+        this.prune(now);
+        const delay = this.nextAvailableInMs(now);
+        if (this.queue.length > 0 && this.timestamps.length < this.maxCalls && delay === 0) {
             const pending = this.queue.shift();
-            if (!pending) break;
-            pending.signal?.removeEventListener("abort", pending.onAbort!);
-            if (pending.signal?.aborted) {
-                pending.reject(this.abortError(pending.signal));
-                continue;
+            if (pending) {
+                pending.signal?.removeEventListener("abort", pending.onAbort!);
+                if (pending.signal?.aborted) {
+                    pending.reject(this.abortError(pending.signal));
+                    this.scheduleQueue();
+                    return;
+                }
+                this.timestamps.push(now);
+                this.lastAcquiredAt = now;
+                pending.resolve();
             }
-            this.timestamps.push(Date.now());
-            pending.resolve();
-            this.prune(Date.now());
         }
         if (this.queue.length > 0) {
-            const delay = Math.max(1, this.snapshot().retryAfterMs);
             this.queueTimer = setTimeout(() => {
                 this.queueTimer = undefined;
                 this.scheduleQueue();
-            }, delay);
+            }, Math.max(1, this.nextAvailableInMs()));
         }
+    }
+
+    public nextAvailableInMs(now: number = Date.now()): number {
+        this.prune(now);
+        const spacingDelay = this.effectiveReleaseEveryMs(now);
+        const oldest = this.timestamps[0];
+        const windowDelay =
+            this.timestamps.length >= this.maxCalls && oldest !== undefined
+                ? Math.max(0, oldest + this.intervalMs - now)
+                : 0;
+        return Math.max(0, Math.max(spacingDelay, windowDelay));
     }
 
     /** Clears all recorded call timestamps. */
     public reset(): void {
         this.timestamps = [];
+        this.lastAcquiredAt = undefined;
         this.scheduleQueue();
     }
 }
